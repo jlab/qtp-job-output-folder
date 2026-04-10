@@ -23,10 +23,19 @@ from qtp_job_output_folder.summary import generate_html_summary
 class SummaryTests(PluginTestCase):
     def setUp(self):
         self.out_dir = mkdtemp()
-        self.source_dir = join(mkdtemp(), "result")
+        # need to refer to a valid mountpoint (here: job) and a directory
+        # that exists in Qiita DB as 'directory' as fetching via https will
+        # fail otherwise. To avoid collisions, a mid-level directory name is
+        # a random string (= _get_candidate_names())
+        self.mountpoint = "job"
+        # only adapt filepaths
+        self.exp_dirname = "2_test_folder"
+        self.source_dir = join(self.base_data_dir, self.mountpoint,
+                               self.exp_dirname)
         source = join(dirname(abspath(getfile(currentframe()))), "test_data")
         copytree(source, self.source_dir)
-        self._clean_up_files = [self.out_dir]
+        self.qclient.push_file_to_central(self.source_dir)
+        self._clean_up_files = [self.out_dir, dirname(self.source_dir)]
 
     def tearDown(self):
         for fp in self._clean_up_files:
@@ -38,9 +47,10 @@ class SummaryTests(PluginTestCase):
 
     def test_summary(self):
         files = [(self.source_dir, "directory")]
+        atype = "job-output-folder"
         data = {
             "filepaths": dumps(files),
-            "type": "job-output-folder",
+            "type": atype,
             "name": "A name",
             "data_type": "Job Output Folder",
         }
@@ -59,6 +69,9 @@ class SummaryTests(PluginTestCase):
         obs_success, obs_ainfo, obs_error = generate_html_summary(
             self.qclient, job_id, parameters, self.out_dir
         )
+        fp_target_dir = '%s/%s' % (self.source_dir.split(
+            '/%s/' % self.mountpoint)[0], atype)
+        self._clean_up_files.append(fp_target_dir)
 
         # asserting reply
         self.assertTrue(obs_success)
@@ -73,34 +86,44 @@ class SummaryTests(PluginTestCase):
             for f in res["files"].values()
             for ff in f
         ]
-        html_fp = res["files"]["html_summary"][0]["filepath"]
+        html_fp = self.qclient.fetch_file_from_central(
+            res["files"]["html_summary"][0]["filepath"]
+        )
         with open(html_fp) as html_f:
             html = html_f.read()
 
-        self.assertEqual(html, EXP_HTML.format(aid=aid))
+        self.assertCountEqual(
+            html.split('<br/>\n'),
+            EXP_HTML.format(aid=aid, dir=self.exp_dirname).split('<br/>\n')
+        )
 
         # verifying the new MANIFEST.txt
         mfp = join(res["files"]["directory"][0]["filepath"], "MANIFEST.txt")
         self.assertTrue(exists(f"{mfp}"))
         with open(mfp, "r") as f:
             obs = f.readlines()
-        self.assertCountEqual(obs, EXP_MANIFEST)
+        self.assertCountEqual(
+            list(map(str.strip, obs)),
+            list(map(
+                lambda x: x.format(dir=self.exp_dirname).strip(),
+                EXP_MANIFEST))
+        )
 
 
 EXP_HTML = (
-    '<a href="./{aid}/result/MANIFEST.txt" type="file" target="_blank">'
-    "result/MANIFEST.txt</a><br/>\n"
-    '<a href="./{aid}/result/file_1" type="file" target="_blank">'
-    "result/file_1</a><br/>\n"
-    '<a href="./{aid}/result/file_2" type="file" target="_blank">'
-    "result/file_2</a><br/>\n"
-    '<a href="./{aid}/result/folder_a/folder_b/index.html" type="file" '
-    'target="_blank">result/folder_a/folder_b/index.html</a><br/>\n'
-    '<a href="./{aid}/result/folder_1/index.html" type="file" '
-    'target="_blank">result/folder_1/index.html</a>'
+    '<a href="./{aid}/{dir}/MANIFEST.txt" type="file" target="_blank">'
+    "{dir}/MANIFEST.txt</a><br/>\n"
+    '<a href="./{aid}/{dir}/file_1" type="file" target="_blank">'
+    "{dir}/file_1</a><br/>\n"
+    '<a href="./{aid}/{dir}/file_2" type="file" target="_blank">'
+    "{dir}/file_2</a><br/>\n"
+    '<a href="./{aid}/{dir}/folder_a/folder_b/index.html" type="file" '
+    'target="_blank">{dir}/folder_a/folder_b/index.html</a><br/>\n'
+    '<a href="./{aid}/{dir}/folder_1/index.html" type="file" '
+    'target="_blank">{dir}/folder_1/index.html</a>'
 )
 EXP_MANIFEST = [
-    " result/\n",
+    " {dir}/\n",
     "|-- file_1\n",
     "|-- file_2\n",
     "|-- folder_a/\n",
